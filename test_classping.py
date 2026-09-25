@@ -2,6 +2,7 @@ import unittest
 from datetime import date
 
 from src import utils
+from src.local_parser import try_local_parse
 
 
 class ClassPingTests(unittest.TestCase):
@@ -58,6 +59,39 @@ class ClassPingTests(unittest.TestCase):
         )
         self.assertEqual(event["type"], "other")
         self.assertTrue(event["needsReview"])
+
+    def test_clear_test_needs_no_ai(self):
+        parsed = try_local_parse(
+            "Dear Students, SST Revision Test Chapter 1 Q&A on 28 September 2026.",
+            date(2026, 9, 25),
+        )
+        self.assertEqual(parsed["decision"], "local_event")
+        self.assertEqual(parsed["event"]["type"], "test")
+        self.assertEqual(parsed["event"]["subject"], "Social Science")
+        self.assertEqual(parsed["event"]["eventDate"], "2026-09-28")
+
+    def test_clear_notebook_submission_needs_no_ai(self):
+        parsed = try_local_parse(
+            "Bring Science notebook for checking tomorrow.",
+            date(2026, 9, 25),
+        )
+        self.assertEqual(parsed["decision"], "local_event")
+        self.assertEqual(parsed["event"]["type"], "notebook_submission")
+        self.assertEqual(parsed["event"]["eventDate"], "2026-09-26")
+
+    def test_ambiguous_event_goes_to_ai(self):
+        parsed = try_local_parse(
+            "Revision test on Day 5. Prepare Chapter 3.",
+            date(2026, 9, 25),
+        )
+        self.assertEqual(parsed["decision"], "needs_ai")
+
+    def test_irrelevant_message_never_goes_to_ai(self):
+        parsed = try_local_parse(
+            "Tomorrow school dispersal is at 1 PM.",
+            date(2026, 9, 25),
+        )
+        self.assertEqual(parsed["decision"], "not_event")
 
 
 if __name__ == "__main__":
