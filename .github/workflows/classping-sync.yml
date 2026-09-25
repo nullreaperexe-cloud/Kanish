@@ -1,0 +1,74 @@
+name: ClassPing EduSecure Sync
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+  push:
+    branches:
+      - main
+    paths:
+      - "main.py"
+      - "src/**"
+      - "test_classping.py"
+      - "requirements.txt"
+      - ".github/workflows/classping-sync.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: classping-edusecure-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Check out ClassPing
+        uses: actions/checkout@v5
+
+      - name: Check out proven EduSecure reader
+        uses: actions/checkout@v5
+        with:
+          repository: nullreaperexe-cloud/edusecure-pdf-sync
+          path: _edusecure
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Validate ClassPing
+        run: |
+          python -m py_compile main.py src/*.py
+          python -m unittest -v test_classping.py
+
+      - name: Sync EduSecure into ClassPing
+        env:
+          PYTHONUNBUFFERED: "1"
+          EDUSECURE_USERNAME: \${{ secrets.EDUSECURE_USERNAME }}
+          EDUSECURE_PASSWORD: \${{ secrets.EDUSECURE_PASSWORD }}
+          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          OPENROUTER_MODEL: "openrouter/free"
+          CLASSPING_SCAN_DAYS: "30"
+          CLASSPING_AI_BATCH: "8"
+        run: python main.py
+
+      - name: Upload diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: classping-diagnostics-\${{ github.run_id }}
+          path: |
+            classping_report.json
+            debug_classping_login.png
+          if-no-files-found: ignore
+          retention-days: 3
