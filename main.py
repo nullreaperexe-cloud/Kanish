@@ -1,4 +1,3 @@
-# ClassPing backend v1.0 — live sync trigger
 from __future__ import annotations
 
 import json
@@ -15,12 +14,8 @@ from src.firebase_store import (
     store_event,
     write_log,
 )
-from src.utils import (
-    clean_text,
-    likely_academic_event,
-    normalize_event,
-    source_id,
-)
+from src.local_parser import try_local_parse
+from src.utils import clean_text, normalize_event, source_id
 
 REPORT_FILE = Path("classping_report.json")
 MAX_SCAN_DAYS = int(os.environ.get("CLASSPING_SCAN_DAYS", "30"))
@@ -40,9 +35,11 @@ def main() -> int:
     report: Dict[str, Any] = {
         "messagesScanned": 0,
         "alreadyProcessed": 0,
-        "localFilterIgnored": 0,
+        "localIgnored": 0,
+        "localEventsCreated": 0,
         "aiCandidates": 0,
         "aiBatches": 0,
+        "aiErrors": 0,
         "eventsCreated": 0,
         "needsReview": 0,
         "errors": 0,
@@ -53,7 +50,7 @@ def main() -> int:
         messages = scan_recent_messages(MAX_SCAN_DAYS)
         report["messagesScanned"] = len(messages)
 
-        candidates: List[Dict[str, Any]] = []
+        ai_candidates: List[Dict[str, Any]] = []
 
         for item in messages:
             text = item["text"]
@@ -65,7 +62,10 @@ def main() -> int:
                 report["alreadyProcessed"] += 1
                 continue
 
-            if not likely_academic_event(text):
+            local = try_local_parse(text, posted)
+            decision = local["decision"]
+
+            if decision == "not_event":
                 mark_source(
                     db,
                     sid,
@@ -74,11 +74,35 @@ def main() -> int:
                     state="ignored",
                     relevant=False,
                     ai_processed=False,
-                    note="local pre-filter: no academic event signal",
+                    note=f"local: {local['reason']}",
                 )
-                report["localFilterIgnored"] += 1
+                report["localIgnored"] += 1
                 continue
 
+            if decision == "local_event":
+                event = local["event"]
+                store_event(
+                    db,
+                    sid,
+                    0,
+                    event,
+                    posted,
+                )
+                mark_source(
+                    db,
+                    sid,
+                    text=text,
+                    posted_date=posted,
+                    state="done",
+                    relevant=True,
+                    ai_processed=False,
+                    note=f"local parser: {local['reason']}",
+                )
+                report["localEventsCreated"] += 1
+                report["eventsCreated"] += 1
+                continue
+
+            # Only ambiguous/uncertain academic messages reach OpenRouter.
             mark_source(
                 db,
                 sid,
@@ -87,9 +111,9 @@ def main() -> int:
                 state="pending_ai",
                 relevant=True,
                 ai_processed=False,
+                note=f"AI fallback needed: {local['reason']}",
             )
-
-            candidates.append(
+            ai_candidates.append(
                 {
                     "id": sid,
                     "text": text,
@@ -99,18 +123,38 @@ def main() -> int:
                         else None
                     ),
                     "posted_date_obj": posted,
+                    "local_event": local.get("event"),
                 }
             )
 
-        report["aiCandidates"] = len(candidates)
+        report["aiCandidates"] = len(ai_candidates)
 
-        for batch in chunked(candidates, MAX_AI_BATCH):
+        for batch in chunked(ai_candidates, MAX_AI_BATCH):
             report["aiBatches"] += 1
 
-            results = (
-                analyze_messages(batch).get("results")
-                or []
-            )
+            try:
+                analyzed = analyze_messages(batch)
+            except Exception as exc:
+                # AI should NEVER break the EduSecure monitor.
+                # Keep messages pending so a later run can retry.
+                report["aiErrors"] += 1
+                for candidate in batch:
+                    mark_source(
+                        db,
+                        candidate["id"],
+                        text=candidate["text"],
+                        posted_date=candidate["posted_date_obj"],
+                        state="pending_ai",
+                        relevant=True,
+                        ai_processed=False,
+                        note=(
+                            "AI fallback unavailable; retry later: "
+                            f"{type(exc).__name__}"
+                        ),
+                    )
+                continue
+
+            results = analyzed.get("results") or []
             by_id = {
                 clean_text(item.get("id")): item
                 for item in results
@@ -130,10 +174,7 @@ def main() -> int:
                         state="pending_ai",
                         relevant=True,
                         ai_processed=False,
-                        note=(
-                            "AI response missing this message; "
-                            "retry next run"
-                        ),
+                        note="AI response missing message; retry later",
                     )
                     continue
 
@@ -158,9 +199,7 @@ def main() -> int:
 
                 created = 0
 
-                for index, raw_event in enumerate(
-                    events_raw[:8]
-                ):
+                for index, raw_event in enumerate(events_raw[:8]):
                     if not isinstance(raw_event, dict):
                         continue
 
@@ -185,14 +224,10 @@ def main() -> int:
                     sid,
                     text=candidate["text"],
                     posted_date=candidate["posted_date_obj"],
-                    state=(
-                        "done"
-                        if created
-                        else "ignored"
-                    ),
+                    state="done" if created else "ignored",
                     relevant=created > 0,
                     ai_processed=True,
-                    note=f"{created} event(s) stored",
+                    note=f"AI fallback stored {created} event(s)",
                 )
 
         write_log(db, report)
@@ -201,7 +236,6 @@ def main() -> int:
             json.dumps(report, indent=2),
             encoding="utf-8",
         )
-
         print(json.dumps(report, indent=2))
         return 0
 
@@ -210,12 +244,10 @@ def main() -> int:
         report["lastError"] = (
             f"{type(exc).__name__}: {exc}"[:500]
         )
-
         REPORT_FILE.write_text(
             json.dumps(report, indent=2),
             encoding="utf-8",
         )
-
         print(
             "ClassPing sync failed: "
             f"{type(exc).__name__}: {exc}"
