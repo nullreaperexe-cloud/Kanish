@@ -1,3 +1,4 @@
+# ClassPing backend v1.0 — live sync trigger
 from __future__ import annotations
 
 import json
