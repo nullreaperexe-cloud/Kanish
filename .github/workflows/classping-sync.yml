@@ -53,20 +53,25 @@ jobs:
       - name: Sync EduSecure into ClassPing
         env:
           PYTHONUNBUFFERED: "1"
-          EDUSECURE_USERNAME: \${{ secrets.EDUSECURE_USERNAME }}
-          EDUSECURE_PASSWORD: \${{ secrets.EDUSECURE_PASSWORD }}
-          OPENROUTER_API_KEY: \${{ secrets.OPENROUTER_API_KEY }}
-          FIREBASE_SERVICE_ACCOUNT: \${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
+          EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           OPENROUTER_MODEL: "openrouter/free"
           CLASSPING_SCAN_DAYS: "30"
           CLASSPING_AI_BATCH: "8"
-        run: python main.py
+        run: |
+          if [ -z "$EDUSECURE_USERNAME" ] || [ -z "$EDUSECURE_PASSWORD" ] || [ -z "$OPENROUTER_API_KEY" ] || [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "ClassPing secrets are not configured yet; skipping live sync."
+            exit 0
+          fi
+          python main.py
 
       - name: Upload diagnostics on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: classping-diagnostics-\${{ github.run_id }}
+          name: classping-diagnostics-${{ github.run_id }}
           path: |
             classping_report.json
             debug_classping_login.png
