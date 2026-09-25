@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local secrets
+.env
+.env.*
+serviceAccount*.json
+firebase*.json
+*service-account*.json
+google-services.json
+
+# Runtime output
+classping_report.json
+debug_*.png
+_edusecure/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
